@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPU Fractal Explorer — WebGL Deep Zoom</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, html { width: 100%; height: 100%; overflow: hidden; background: #07090e; font-family: system-ui, -apple-system, sans-serif; color: #f1f5f9; }
+    canvas { width: 100vw; height: 100vh; display: block; cursor: grab; }
+    canvas:active { cursor: grabbing; }
+
+    .panel {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      width: 320px;
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+      z-index: 10;
+    }
+
+    h1 { font-size: 1.1rem; font-weight: 700; margin-bottom: 4px; color: #38bdf8; }
+    .subtitle { font-size: 0.78rem; color: #94a3b8; margin-bottom: 14px; }
+
+    .control-group { margin-bottom: 12px; }
+    label { display: flex; justify-content: space-between; font-size: 0.8rem; color: #cbd5e1; margin-bottom: 5px; }
+    select, input[type="range"] {
+      width: 100%;
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 0.82rem;
+    }
+    input[type="range"] { padding: 0; height: 6px; accent-color: #38bdf8; cursor: pointer; }
+
+    .spots-title { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; margin: 12px 0 6px; }
+    .grid-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+    button {
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    button:hover { background: #334155; border-color: #38bdf8; color: #fff; }
+    .btn-primary { width: 100%; background: #0284c7; border-color: #38bdf8; font-weight: 600; margin-top: 4px; }
+    .btn-primary:hover { background: #0369a1; }
+
+    .stats {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      font-family: monospace;
+      font-size: 0.75rem;
+      color: #94a3b8;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="glcanvas"></canvas>
+
+  <div class="panel">
+    <h1>GPU Fractal Explorer</h1>
+    <div class="subtitle">Scroll to zoom • Drag to pan • Real-time GLSL Shader</div>
+
+    <div class="control-group">
+      <label for="fractalType">Fractal Formula</label>
+      <select id="fractalType">
+        <option value="0">Mandelbrot Set</option>
+        <option value="1">Julia Set (Interactive)</option>
+        <option value="2">Burning Ship Fractal</option>
+        <option value="3">Tricorn (Mandelbar)</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label><span>Max Iterations</span> <span id="iterVal">300</span></label>
+      <input type="range" id="iterations" min="50" max="1500" value="300" step="10" />
+    </div>
+
+    <div class="control-group">
+      <label><span>Color Cycle Shift</span> <span id="colorVal">0.0</span></label>
+      <input type="range" id="colorShift" min="0" max="6.28" value="0" step="0.05" />
+    </div>
+
+    <div class="control-group" id="juliaControls" style="display: none;">
+      <label><span>Julia Constant (Real)</span> <span id="jReVal">-0.70</span></label>
+      <input type="range" id="juliaRe" min="-1.5" max="1.5" value="-0.7" step="0.002" />
+      <label style="margin-top:6px;"><span>Julia Constant (Imag)</span> <span id="jImVal">0.270</span></label>
+      <input type="range" id="juliaIm" min="-1.5" max="1.5" value="0.27015" step="0.002" />
+    </div>
+
+    <div class="spots-title">Best Spots to Visit</div>
+    <div class="grid-btns">
+      <button onclick="goToSpot(0, -0.5, 0.0, 1.0, 300)">Overview</button>
+      <button onclick="goToSpot(0, -0.74364388, 0.1318259, 4500.0, 700)">Seahorse Valley</button>
+      <button onclick="goToSpot(0, 0.28171792, 0.57710528, 3200.0, 650)">Elephant Valley</button>
+      <button onclick="goToSpot(0, -0.748, 0.1, 900.0, 500)">Double Spiral</button>
+      <button onclick="goToSpot(2, -1.755, -0.03, 35.0, 450)">Burning Armada</button>
+      <button onclick="goToSpot(1, 0.0, 0.0, 1.2, 400, -0.8, 0.156)">Electric Julia</button>
+    </div>
+
+    <button class="btn-primary" onclick="saveScreenshot()">Save HD Screenshot (.png)</button>
+
+    <div class="stats" id="statsBox">
+      Center: -0.500000, 0.000000i<br/>
+      Zoom: 1.00x
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('glcanvas');
+    const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true });
+
+    if (!gl) {
+      alert('WebGL is required to run this shader.');
+    }
+
+    const vsSource = `
+      attribute vec2 a_position;
+      void main() {
+        gl_Position = vec4(a_position, 0.0, 1.0);
+      }
+    `;
+
+    const fsSource = `
+      precision highp float;
+      uniform vec2 u_resolution;
+      uniform vec2 u_center;
+      uniform float u_zoom;
+      uniform int u_maxIterations;
+      uniform int u_fractalType;
+      uniform float u_colorShift;
+      uniform vec2 u_juliaC;
+
+      vec3 palette(float t) {
+        vec3 a = vec3(0.5, 0.5, 0.5);
+        vec3 b = vec3(0.5, 0.5, 0.5);
+        vec3 c = vec3(1.0, 1.0, 1.0);
+        vec3 d = vec3(0.00, 0.33, 0.67);
+        return a + b * cos(6.28318 * (c * t + d + u_colorShift * 0.15));
+      }
+
+      void main() {
+        vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / min(u_resolution.x, u_resolution.y);
+        vec2 p = uv * (2.8 / u_zoom) + u_center;
+
+        vec2 z = (u_fractalType == 1) ? p : vec2(0.0);
+        vec2 c = (u_fractalType == 1) ? u_juliaC : p;
+
+        float iter = 0.0;
+        const int LIMIT = 2000;
+
+        for (int i = 0; i < LIMIT; i++) {
+          if (i >= u_maxIterations) break;
+
+          float x2 = z.x * z.x;
+          float y2 = z.y * z.y;
+          if (x2 + y2 > 256.0) break;
+
+          if (u_fractalType == 2) {
+            // Burning Ship
+            z = vec2(x2 - y2 + c.x, -2.0 * abs(z.x * z.y) + c.y);
+          } else if (u_fractalType == 3) {
+            // Tricorn
+            z = vec2(x2 - y2 + c.x, -2.0 * z.x * z.y + c.y);
+          } else {
+            // Mandelbrot & Julia
+            z = vec2(x2 - y2 + c.x, 2.0 * z.x * z.y + c.y);
+          }
+          iter += 1.0;
+        }
+
+        if (iter >= float(u_maxIterations)) {
+          gl_FragColor = vec4(0.02, 0.03, 0.06, 1.0);
+          return;
+        }
+
+        // Normalized Iteration Count for Smooth Coloring
+        float log_zn = log(z.x * z.x + z.y * z.y) / 2.0;
+        float nu = log(log_zn / log(2.0)) / log(2.0);
+        float smoothIter = iter + 1.0 - nu;
+
+        vec3 col = palette(smoothIter * 0.025);
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `;
+
+    function compileShader(type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(shader));
+      }
+      return shader;
+    }
+
+    const program = gl.createProgram();
+    gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vsSource));
+    gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fsSource));
+    gl.linkProgram(program);
+    gl.useProgram(program);
+
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1, -1,  1, -1, -1,  1,
+      -1,  1,  1, -1,  1,  1
+    ]), gl.STATIC_DRAW);
+
+    const posLoc = gl.getAttribLocation(program, 'a_position');
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+    // State
+    let centerX = -0.5;
+    let centerY = 0.0;
+    let zoom = 1.0;
+    let maxIterations = 300;
+    let fractalType = 0;
+    let colorShift = 0.0;
+    let juliaRe = -0.7;
+    let juliaIm = 0.27015;
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = window.innerWidth * dpr;
+      canvas.height = window.innerHeight * dpr;
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      render();
+    }
+    window.addEventListener('resize', resize);
+
+    function render() {
+      gl.uniform2f(gl.getUniformLocation(program, 'u_resolution'), canvas.width, canvas.height);
+      gl.uniform2f(gl.getUniformLocation(program, 'u_center'), centerX, centerY);
+      gl.uniform1f(gl.getUniformLocation(program, 'u_zoom'), zoom);
+      gl.uniform1i(gl.getUniformLocation(program, 'u_maxIterations'), maxIterations);
+      gl.uniform1i(gl.getUniformLocation(program, 'u_fractalType'), fractalType);
+      gl.uniform1f(gl.getUniformLocation(program, 'u_colorShift'), colorShift);
+      gl.uniform2f(gl.getUniformLocation(program, 'u_juliaC'), juliaRe, juliaIm);
+
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      document.getElementById('statsBox').innerHTML =
+        `Center: ${centerX.toFixed(7)}, ${centerY.toFixed(7)}i<br/>Zoom: ${zoom.toFixed(2)}x`;
+    }
+
+    // Mouse Pan & Zoom
+    let isDragging = false;
+    let lastX = 0, lastY = 0;
+
+    canvas.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+    });
+
+    window.addEventListener('mouseup', () => { isDragging = false; });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+
+      const minDim = Math.min(window.innerWidth, window.innerHeight);
+      const scale = 2.8 / (zoom * minDim);
+      centerX -= dx * scale;
+      centerY += dy * scale;
+      render();
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const minDim = Math.min(window.innerWidth, window.innerHeight);
+      const mx = (e.clientX - 0.5 * window.innerWidth) / minDim;
+      const my = (0.5 * window.innerHeight - e.clientY) / minDim;
+
+      const worldX = mx * (2.8 / zoom) + centerX;
+      const worldY = my * (2.8 / zoom) + centerY;
+
+      const factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
+      zoom = Math.max(0.4, Math.min(zoom * factor, 150000.0));
+
+      centerX = worldX - mx * (2.8 / zoom);
+      centerY = worldY - my * (2.8 / zoom);
+      render();
+    }, { passive: false });
+
+    // UI Bindings
+    document.getElementById('fractalType').addEventListener('change', (e) => {
+      fractalType = parseInt(e.target.value, 10);
+      document.getElementById('juliaControls').style.display = (fractalType === 1) ? 'block' : 'none';
+      if (fractalType === 1) { centerX = 0; centerY = 0; zoom = 1.0; }
+      render();
+    });
+
+    document.getElementById('iterations').addEventListener('input', (e) => {
+      maxIterations = parseInt(e.target.value, 10);
+      document.getElementById('iterVal').textContent = maxIterations;
+      render();
+    });
+
+    document.getElementById('colorShift').addEventListener('input', (e) => {
+      colorShift = parseFloat(e.target.value);
+      document.getElementById('colorVal').textContent = colorShift.toFixed(2);
+      render();
+    });
+
+    document.getElementById('juliaRe').addEventListener('input', (e) => {
+      juliaRe = parseFloat(e.target.value);
+      document.getElementById('jReVal').textContent = juliaRe.toFixed(3);
+      render();
+    });
+
+    document.getElementById('juliaIm').addEventListener('input', (e) => {
+      juliaIm = parseFloat(e.target.value);
+      document.getElementById('jImVal').textContent = juliaIm.toFixed(3);
+      render();
+    });
+
+    window.goToSpot = function(type, x, y, z, iter, jRe = -0.7, jIm = 0.27015) {
+      fractalType = type;
+      document.getElementById('fractalType').value = String(type);
+      document.getElementById('juliaControls').style.display = (type === 1) ? 'block' : 'none';
+      centerX = x;
+      centerY = y;
+      zoom = z;
+      maxIterations = iter;
+      juliaRe = jRe;
+      juliaIm = jIm;
+      document.getElementById('iterations').value = iter;
+      document.getElementById('iterVal').textContent = iter;
+      render();
+    };
+
+    window.saveScreenshot = function() {
+      render();
+      const link = document.createElement('a');
+      link.download = 'fractal-deep-zoom.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    };
+
+    resize();
+  </script>
+</body>
+</html>
